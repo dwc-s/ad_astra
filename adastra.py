@@ -25,10 +25,10 @@ from astropy.coordinates import SkyCoord
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLineEdit, QPushButton, QTextEdit, QFormLayout, QMessageBox,
+                             QLineEdit, QPushButton, QTextEdit, QFormLayout, QMessageBox, QSizePolicy,
                              QTableWidget, QTableWidgetItem, QComboBox, QLabel, QDialog, 
                              QListWidget, QAbstractItemView, QHeaderView, QCheckBox, QTabWidget,
-                             QTextBrowser, QFileDialog)
+                             QTextBrowser, QFileDialog, QScrollArea)
 
 # Mapping of SIMBAD O-types to human-readable descriptions
 # Source: https://simbad.cds.unistra.fr/guide/otypes.htx
@@ -562,7 +562,7 @@ class AdAstraWindow(QMainWindow):
         
         # In-memory store for location data
         self.locations = {}
-        
+
         self.setWindowTitle("Ad Astra")
         self.resize(1000, 600)
         
@@ -644,8 +644,8 @@ class AdAstraWindow(QMainWindow):
         right_layout = QVBoxLayout(right_widget)
         
         self.results_table = QTableWidget()
-        self.results_table.setColumnCount(7)
-        self.results_table.setHorizontalHeaderLabels(["", "Name", "Type", "RA", "Dec", "Observable", "Mag"])
+        self.results_table.setColumnCount(8)
+        self.results_table.setHorizontalHeaderLabels(["", "Name", "Type", "RA", "Dec", "Observable", "Mag", "Deep Dive"])
         
         for i in range(self.results_table.columnCount()):
             self.results_table.horizontalHeaderItem(i).setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -690,6 +690,7 @@ class AdAstraWindow(QMainWindow):
         self.results_table.horizontalHeaderItem(4).setToolTip("Declination (ICRS)")
         self.results_table.horizontalHeaderItem(5).setToolTip("Time range when object is visible (Local Time)")
         self.results_table.horizontalHeaderItem(6).setToolTip("Visual Magnitude (Lower is brighter)")
+        self.results_table.horizontalHeaderItem(7).setToolTip("View detailed object data")
         
         right_layout.addWidget(self.results_table)
         
@@ -708,8 +709,87 @@ class AdAstraWindow(QMainWindow):
 
         # --- Tab 2: Object Deep Dive ---
         self.deep_dive_tab = QWidget()
-        deep_dive_layout = QVBoxLayout(self.deep_dive_tab)
-        deep_dive_layout.addWidget(QLabel("Object Deep Dive functionality coming soon."))
+        
+        # Use a ScrollArea to handle long lists of aliases
+        tab_layout = QVBoxLayout(self.deep_dive_tab)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("QScrollArea { border: none; }")
+        tab_layout.addWidget(scroll_area)
+        
+        scroll_content = QWidget()
+        scroll_layout = QHBoxLayout(scroll_content)
+        
+        left_widget = QWidget()
+        deep_dive_layout = QVBoxLayout(left_widget)
+        
+        # Search Bar
+        search_layout = QHBoxLayout()
+        self.dd_search_edit = QLineEdit()
+        self.dd_search_edit.setPlaceholderText("Enter object name (e.g. M31, Sirius, NGC 224)...")
+        self.dd_search_edit.returnPressed.connect(self.perform_deep_dive_search)
+        search_layout.addWidget(self.dd_search_edit)
+        
+        self.dd_search_btn = QPushButton("Search")
+        self.dd_search_btn.clicked.connect(self.perform_deep_dive_search)
+        search_layout.addWidget(self.dd_search_btn)
+        
+        deep_dive_layout.addLayout(search_layout)
+        
+        # Results Container
+        self.dd_results_widget = QWidget()
+        self.dd_results_widget.setVisible(False)
+        res_layout = QVBoxLayout(self.dd_results_widget)
+        
+        # Object Info
+        info_form = QFormLayout()
+        info_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.dd_name_label = QLabel()
+        self.dd_aliases_label = QLabel()
+        self.dd_aliases_label.setWordWrap(True)
+        self.dd_aliases_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
+        self.dd_aliases_label.setStyleSheet("font-size: 11px;")
+        self.dd_type_label = QLabel()
+        self.dd_coords_label = QLabel()
+        self.dd_mag_label = QLabel()
+        
+        info_form.addRow("Main Name:", self.dd_name_label)
+        info_form.addRow("Aliases:", self.dd_aliases_label)
+        info_form.addRow("Type:", self.dd_type_label)
+        info_form.addRow("Coordinates (RA/Dec):", self.dd_coords_label)
+        info_form.addRow("Magnitude (V):", self.dd_mag_label)
+        res_layout.addLayout(info_form)
+        
+        # Deep Dive Action Buttons
+        dd_btns_row1 = QHBoxLayout()
+        
+        self.dd_images_btn = QPushButton("Images")
+        self.dd_images_btn.clicked.connect(lambda: self.log("Images functionality coming soon"))
+        self.dd_spectra_btn = QPushButton("Spectra")
+        self.dd_spectra_btn.clicked.connect(lambda: self.log("Spectra functionality coming soon"))
+        dd_btns_row1.addWidget(self.dd_images_btn)
+        dd_btns_row1.addWidget(self.dd_spectra_btn)
+        
+        dd_btns_row2 = QHBoxLayout()
+        self.dd_surround_btn = QPushButton("Surrounding Objects")
+        self.dd_surround_btn.clicked.connect(lambda: self.log("Surrounding Objects functionality coming soon"))
+        self.dd_compare_btn = QPushButton("Compare with Other Wavelengths")
+        self.dd_compare_btn.clicked.connect(lambda: self.log("Compare functionality coming soon"))
+        
+        dd_btns_row2.addWidget(self.dd_surround_btn)
+        dd_btns_row2.addWidget(self.dd_compare_btn)
+        
+        res_layout.addLayout(dd_btns_row1)
+        res_layout.addLayout(dd_btns_row2)
+        
+        deep_dive_layout.addWidget(self.dd_results_widget)
+        deep_dive_layout.addStretch()
+        
+        scroll_layout.addWidget(left_widget)
+        scroll_layout.addStretch()
+        
+        scroll_area.setWidget(scroll_content)
+        
         self.tabs.addTab(self.deep_dive_tab, "Object Deep Dive")
 
         # Load initial config
@@ -1186,6 +1266,10 @@ class AdAstraWindow(QMainWindow):
                 self.results_table.setItem(row, 4, NumericTableWidgetItem(dec_str, sort_value=obj['dec']))
                 self.results_table.setItem(row, 5, NumericTableWidgetItem(range_str, sort_value=range_sort))
                 self.results_table.setItem(row, 6, NumericTableWidgetItem(f"{obj['mag']:.2f}"))
+                
+                dd_btn = QPushButton("Deep Dive")
+                dd_btn.clicked.connect(lambda checked, n=obj['name']: self.open_deep_dive(n))
+                self.results_table.setCellWidget(row, 7, dd_btn)
             
             self.results_table.setSortingEnabled(True)
             self.results_table.resizeRowsToContents()
@@ -1193,6 +1277,113 @@ class AdAstraWindow(QMainWindow):
 
         except Exception as e:
             self.log(f"Error checking observability: {e}")
+
+    def open_deep_dive(self, name):
+        """Switches to Deep Dive tab and searches for the object."""
+        self.tabs.setCurrentWidget(self.deep_dive_tab)
+        self.dd_search_edit.setText(name)
+        self.perform_deep_dive_search()
+
+    def perform_deep_dive_search(self):
+        """Searches for a specific object by name/alias and displays details."""
+        name = self.dd_search_edit.text().strip()
+        if not name: return
+        
+        self.log(f"Searching SIMBAD for '{name}'...")
+        QApplication.processEvents()
+        
+        try:
+            custom_simbad = Simbad()
+            # Update for deprecation: use 'V', 'ra', 'dec' instead of 'flux(V)', 'ra(d)', 'dec(d)'
+            custom_simbad.add_votable_fields('V', 'otype', 'ra', 'dec')
+            
+            # 1. Query Object Properties (Resolves any alias to the main object)
+            table = custom_simbad.query_object(name)
+            
+            if table:
+                row = table[0]
+                
+                # Extract Data
+                # Handle potential column name variations (e.g. MAIN_ID vs main_id)
+                if 'MAIN_ID' in row.colnames:
+                    main_id = row['MAIN_ID']
+                elif 'main_id' in row.colnames:
+                    main_id = row['main_id']
+                else:
+                    main_id = name
+
+                if isinstance(main_id, bytes): main_id = main_id.decode('utf-8')
+                main_id = str(main_id)
+                
+                # RA/Dec: Try new names 'ra'/'dec' first, then old 'RA_d'/'DEC_d'
+                if 'ra' in row.colnames:
+                    ra = row['ra']
+                elif 'RA_d' in row.colnames:
+                    ra = row['RA_d']
+                else:
+                    ra = 0.0
+                
+                if 'dec' in row.colnames:
+                    dec = row['dec']
+                elif 'DEC_d' in row.colnames:
+                    dec = row['DEC_d']
+                else:
+                    dec = 0.0
+                
+                # OTYPE
+                if 'OTYPE' in row.colnames:
+                    otype = row['OTYPE']
+                elif 'otype' in row.colnames:
+                    otype = row['otype']
+                else:
+                    otype = '?'
+
+                if isinstance(otype, bytes): otype = otype.decode('utf-8')
+                human_type = OTYPE_MAP.get(str(otype).strip(), str(otype))
+                
+                mag = "-"
+                # Flux V: Try 'V' first, then 'FLUX_V'
+                val = None
+                if 'V' in row.colnames:
+                    val = row['V']
+                elif 'FLUX_V' in row.colnames:
+                    val = row['FLUX_V']
+
+                if val is not None and not np.ma.is_masked(val):
+                    mag = f"{float(val):.2f}"
+                
+                # Format Coordinates
+                coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+                ra_str = coord.ra.to_string(unit=u.hour, sep=('h', 'm', 's'), precision=1, pad=True)
+                dec_str = coord.dec.to_string(unit=u.deg, sep=('d', 'm', 's'), precision=1, alwayssign=True, pad=True)
+                
+                # Update Info Labels
+                self.dd_name_label.setText(main_id)
+                self.dd_type_label.setText(human_type)
+                self.dd_coords_label.setText(f"{ra_str}, {dec_str}")
+                self.dd_mag_label.setText(mag)
+                
+                # 2. Query Aliases using the resolved MAIN_ID
+                ids_table = custom_simbad.query_objectids(main_id)
+                aliases_list = []
+                if ids_table:
+                    for id_row in ids_table:
+                        val = id_row[0]
+                        if isinstance(val, bytes): val = val.decode('utf-8')
+                        alias = ' '.join(str(val).split())
+                        aliases_list.append(alias)
+                
+                # Use HTML with padding to prevent vertical clipping of text
+                self.dd_aliases_label.setText(f"<div style='padding: 10px;'>{', '.join(aliases_list)}</div>")
+                self.dd_results_widget.setVisible(True)
+                self.log(f"Deep dive data loaded for {main_id}")
+            else:
+                QMessageBox.warning(self, "Not Found", f"Could not find object '{name}' in SIMBAD.")
+                self.log(f"Object '{name}' not found.")
+                
+        except Exception as e:
+            self.log(f"Deep dive search error: {e}")
+            QMessageBox.critical(self, "Error", f"Search failed: {e}")
 
 if __name__ == "__main__":
     # Download IERS data (Earth rotation data) required for precise time/coordinate conversions
