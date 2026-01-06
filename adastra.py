@@ -22,24 +22,28 @@ from astropy.time import Time
 from timezonefinder import TimezoneFinder
 from astroquery.simbad import Simbad
 from astroquery.hips2fits import hips2fits
-from astropy.visualization import simple_norm
+from astropy.visualization import simple_norm, AsinhStretch
+from astropy.visualization.mpl_normalize import ImageNormalize
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.colors import Normalize
 from astropy.coordinates import SkyCoord
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QTextEdit, QFormLayout, QMessageBox, QSizePolicy,
                              QTableWidget, QTableWidgetItem, QComboBox, QLabel, QDialog, 
                              QListWidget, QAbstractItemView, QHeaderView, QCheckBox, QTabWidget,
-                             QTextBrowser, QFileDialog, QScrollArea)
+                             QTextBrowser, QFileDialog, QScrollArea, QSlider, QFrame, QGridLayout)
 import warnings
 from astropy.utils.exceptions import AstropyWarning
 
 # --- Style Configuration ---
 # This color is used for text within Matplotlib plots, which is not controlled by the CSS file.
 PLOT_TEXT_COLOR = 'white'
+# This color is for the Matplotlib figure background. It should match the dialog background in the CSS.
+PLOT_BG_COLOR = '#2b2b35'
+
 
 # Suppress specific Astropy warnings
 warnings.filterwarnings('ignore', category=AstropyWarning, append=True)
@@ -235,6 +239,108 @@ OTYPE_MAP = {
      'Y*O': 'Young Stellar Object',
  }
 
+class ClickableLabel(QLabel):
+    """A QLabel that emits a clicked signal with its stored data."""
+    clicked = pyqtSignal(object, str)
+
+    def __init__(self, data, title, parent=None):
+        super().__init__(parent)
+        self.data = data
+        self.title = title
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        self.clicked.emit(self.data, self.title)
+
+class ImageDialog(QDialog):
+    """A resizable dialog to show a single large image."""
+    def __init__(self, image_data, title, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(800, 800)
+        
+        layout = QVBoxLayout(self)
+        self.figure = Figure(facecolor=PLOT_BG_COLOR)
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        layout.addWidget(self.canvas)
+        
+        self.plot_image(image_data, title)
+
+    def plot_image(self, data, title):
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        
+        if data.ndim == 3:
+            if data.shape[0] == 3:
+                data = np.transpose(data, (1, 2, 0))
+            
+            # Apply Asinh stretch to each channel to improve contrast
+            stretched_data = np.zeros_like(data, dtype=float)
+            for i in range(3):
+                channel = data[:, :, i]
+                channel = np.nan_to_num(channel)
+                stretch = AsinhStretch(a=0.1)
+                norm = ImageNormalize(stretch=stretch, vmin=np.min(channel), vmax=np.max(channel))
+                stretched_data[:, :, i] = norm(channel)
+
+            ax.imshow(stretched_data, origin='lower')
+        else:
+            data = np.nan_to_num(data)
+            norm = ImageNormalize(stretch=AsinhStretch(a=0.1), vmin=np.min(data), vmax=np.max(data))
+            ax.imshow(data, origin='lower', cmap='gray', norm=norm)
+            
+        ax.set_title(title, color=PLOT_TEXT_COLOR)
+        ax.axis('off')
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+class MultiImageDialog(QDialog):
+    """A dialog to display multiple images in a grid."""
+    def __init__(self, title, images, layout_shape=(1, 1), parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(1200, 900)
+        self.setStyleSheet(f"background-color: {PLOT_BG_COLOR}; color: {PLOT_TEXT_COLOR};")
+        
+        layout = QVBoxLayout(self)
+        self.figure = Figure(facecolor=PLOT_BG_COLOR)
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        layout.addWidget(self.canvas)
+        
+        self.plot_images(images, layout_shape)
+        
+    def plot_images(self, images, layout_shape):
+        # images: list of tuples (data, title, cmap)
+        rows, cols = layout_shape
+        axes = self.figure.subplots(rows, cols)
+        if rows * cols == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten()
+            
+        for i, ax in enumerate(axes):
+            if i < len(images):
+                data, title, cmap = images[i]
+                data = np.nan_to_num(data)
+                
+                if cmap == 'gray':
+                     norm = ImageNormalize(stretch=AsinhStretch(a=0.1), vmin=np.nanmin(data), vmax=np.nanmax(data))
+                else:
+                     norm = simple_norm(data, 'sqrt', percent=99)
+                
+                im = ax.imshow(data, origin='lower', cmap=cmap, norm=norm)
+                ax.set_title(title, color=PLOT_TEXT_COLOR)
+                ax.axis('off')
+                
+                # Add center marker
+                h, w = data.shape
+                ax.plot(w / 2 - 0.5, h / 2 - 0.5, 'ko', markersize=4, markerfacecolor='none', markeredgecolor='cyan')
+            else:
+                ax.axis('off')
+        
+        self.figure.tight_layout()
+        self.canvas.draw()
+
 class NumericTableWidgetItem(QTableWidgetItem):
     """
     Custom TableItem to ensure numerical sorting for columns like Magnitude and Coordinates.
@@ -254,45 +360,6 @@ class NumericTableWidgetItem(QTableWidgetItem):
             return float(self.text()) < float(other.text())
         except ValueError:
             return super().__lt__(other)
-
-class GasMapDialog(QDialog):
-    def __init__(self, object_name, images, survey_names, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"Gas & Dust Density: {object_name}")
-        self.resize(1100, 600)
-        self.setObjectName("GasMapDialog")
-        layout = QVBoxLayout(self)
-        
-        self.figure = Figure(figsize=(10, 5))
-        self.figure.setObjectName("GasMapFigure")
-        self.canvas = FigureCanvasQTAgg(self.figure)
-        layout.addWidget(self.canvas)
-        
-        # Plotting
-        n = len(images)
-        if n > 0:
-            axes = self.figure.subplots(1, n)
-            if n == 1:
-                axes = [axes]
-        
-            for i, ax in enumerate(axes):
-                data = images[i][0].data
-                data = np.nan_to_num(data) # Handle NaNs to prevent plot errors
-                norm = simple_norm(data, 'sqrt', percent=99)
-                im = ax.imshow(data, origin='lower', cmap='inferno', norm=norm)
-                ax.set_title(f"{survey_names[i]} (Density/Opacity)", color=PLOT_TEXT_COLOR)
-                ax.axis('off')
-                self.figure.colorbar(im, ax=ax, orientation='horizontal', fraction=0.046, pad=0.04)
-                
-                # Add black dot at center to mark target location
-                h, w = data.shape
-                ax.plot(w / 2 - 0.5, h / 2 - 0.5, 'ko', markersize=4)
-        
-        self.figure.tight_layout()
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
 
 class LocationManagerDialog(QDialog):
     def __init__(self, parent=None):
@@ -591,9 +658,11 @@ class AdAstraWindow(QMainWindow):
         
         self.current_dd_coord = None
         self.current_dd_name = None
+        self.overlay_maps = {} # Store fetched gas/dust maps for overlay
+        self.dynamic_photo_widgets = [] # Keep track of photo widgets
 
         self.setWindowTitle("Ad Astra")
-        self.resize(1000, 600)
+        self.resize(1200, 800) # Increased default size
         
         # Set window icon (requires 'icon.png' in the same directory)
         self.setWindowIcon(QIcon('icon.png'))
@@ -714,19 +783,9 @@ class AdAstraWindow(QMainWindow):
         # --- Tab 2: Object Deep Dive ---
         self.deep_dive_tab = QWidget()
         
-        # Use a ScrollArea to handle long lists of aliases
         tab_layout = QVBoxLayout(self.deep_dive_tab)
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        tab_layout.addWidget(scroll_area)
         
-        scroll_content = QWidget()
-        scroll_layout = QHBoxLayout(scroll_content)
-        
-        left_widget = QWidget()
-        deep_dive_layout = QVBoxLayout(left_widget)
-        
-        # Search Bar
+        # Top Search Bar
         search_layout = QHBoxLayout()
         self.dd_search_edit = QLineEdit()
         self.dd_search_edit.setPlaceholderText("Enter object name (e.g. M31, Sirius, NGC 224)...")
@@ -736,15 +795,22 @@ class AdAstraWindow(QMainWindow):
         self.dd_search_btn = QPushButton("Search")
         self.dd_search_btn.clicked.connect(self.perform_deep_dive_search)
         search_layout.addWidget(self.dd_search_btn)
+        tab_layout.addLayout(search_layout)
+
+        # Main content area (Info on left, Maps on right)
+        content_layout = QHBoxLayout()
         
-        deep_dive_layout.addLayout(search_layout)
+        # Left side: Info Panel
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_content = QWidget()
         
-        # Results Container
+        deep_dive_layout = QVBoxLayout(scroll_content)
+        
         self.dd_results_widget = QWidget()
         self.dd_results_widget.setVisible(False)
         res_layout = QVBoxLayout(self.dd_results_widget)
         
-        # Object Info
         info_form = QFormLayout()
         info_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.dd_name_label = QLabel()
@@ -754,37 +820,40 @@ class AdAstraWindow(QMainWindow):
         self.dd_type_label = QLabel()
         self.dd_coords_label = QLabel()
         self.dd_mag_label = QLabel()
+        self.dd_dist_label = QLabel() # New label for distance
         
         info_form.addRow("Main Name:", self.dd_name_label)
         info_form.addRow("Aliases:", self.dd_aliases_label)
         info_form.addRow("Type:", self.dd_type_label)
         info_form.addRow("Coordinates (RA/Dec):", self.dd_coords_label)
         info_form.addRow("Magnitude (V):", self.dd_mag_label)
+        info_form.addRow("Distance (ly):", self.dd_dist_label) # Add to form
         res_layout.addLayout(info_form)
         
-        # Deep Dive Action Buttons
+        # New Buttons
         dd_btns_row1 = QHBoxLayout()
-        
-        self.dd_images_btn = QPushButton("Images")
-        self.dd_images_btn.clicked.connect(lambda: self.log("Images functionality coming soon"))
-        self.dd_spectra_btn = QPushButton("Spectra")
-        self.dd_spectra_btn.clicked.connect(lambda: self.log("Spectra functionality coming soon"))
-        dd_btns_row1.addWidget(self.dd_images_btn)
-        dd_btns_row1.addWidget(self.dd_spectra_btn)
+        self.photos_btn = QPushButton("Photos")
+        self.photos_btn.clicked.connect(self.open_photos_window)
+        self.spectroscopy_btn = QPushButton("Spectroscopy")
+        self.spectroscopy_btn.clicked.connect(lambda: self.log("Spectroscopy functionality coming soon"))
+        dd_btns_row1.addWidget(self.photos_btn)
+        dd_btns_row1.addWidget(self.spectroscopy_btn)
         
         dd_btns_row2 = QHBoxLayout()
-        self.dd_surround_btn = QPushButton("Surrounding Objects")
-        self.dd_surround_btn.clicked.connect(lambda: self.log("Surrounding Objects functionality coming soon"))
-        self.dd_compare_btn = QPushButton("Compare with Other Wavelengths")
-        self.dd_compare_btn.clicked.connect(lambda: self.log("Compare functionality coming soon"))
-        
-        dd_btns_row2.addWidget(self.dd_surround_btn)
-        dd_btns_row2.addWidget(self.dd_compare_btn)
+        self.spatial_cube_btn = QPushButton("Spatial Cube")
+        self.spatial_cube_btn.clicked.connect(lambda: self.log("Spatial Cube functionality coming soon"))
+        self.hidden_stars_btn = QPushButton("Hidden Stars")
+        self.hidden_stars_btn.clicked.connect(lambda: self.log("Hidden Stars functionality coming soon"))
+        dd_btns_row2.addWidget(self.spatial_cube_btn)
+        dd_btns_row2.addWidget(self.hidden_stars_btn)
         
         dd_btns_row3 = QHBoxLayout()
         self.dd_gas_btn = QPushButton("Check for Surrounding Gas")
-        self.dd_gas_btn.clicked.connect(self.find_surrounding_gas)
+        self.dd_gas_btn.clicked.connect(self.open_surrounding_gas_window)
+        self.comet_tracker_btn = QPushButton("Comet Tracker")
+        self.comet_tracker_btn.clicked.connect(lambda: self.log("Comet Tracker functionality coming soon"))
         dd_btns_row3.addWidget(self.dd_gas_btn)
+        dd_btns_row3.addWidget(self.comet_tracker_btn)
         
         res_layout.addLayout(dd_btns_row1)
         res_layout.addLayout(dd_btns_row2)
@@ -793,11 +862,33 @@ class AdAstraWindow(QMainWindow):
         deep_dive_layout.addWidget(self.dd_results_widget)
         deep_dive_layout.addStretch()
         
-        scroll_layout.addWidget(left_widget)
-        scroll_layout.addStretch()
-        
         scroll_area.setWidget(scroll_content)
+        content_layout.addWidget(scroll_area, 1) # Info panel takes 1/3 of space
+
+        # Right side: Container for all maps (Scrollable)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        self.right_scroll_content = QWidget()
+        self.right_layout = QVBoxLayout(self.right_scroll_content)
+
+        # Gas Map container (Always at top)
+        self.gas_map_figure = Figure(facecolor=PLOT_BG_COLOR)
+        self.gas_map_canvas = FigureCanvasQTAgg(self.gas_map_figure)
+        self.gas_map_canvas.setMinimumHeight(500) # Fixed height to prevent shrinking
+        self.gas_map_canvas.setVisible(False) # Hidden by default
+        self.right_layout.addWidget(self.gas_map_canvas)
         
+        # Container for dynamic photo widgets
+        self.photos_container = QWidget()
+        self.photos_layout = QVBoxLayout(self.photos_container)
+        self.right_layout.addWidget(self.photos_container)
+        
+        self.right_layout.addStretch()
+        right_scroll.setWidget(self.right_scroll_content)
+        
+        content_layout.addWidget(right_scroll, 2) # Changed from 3 to 2 for 1:2 ratio
+        
+        tab_layout.addLayout(content_layout)
         self.tabs.addTab(self.deep_dive_tab, "Object Deep Dive")
 
         # Load initial config
@@ -1297,16 +1388,26 @@ class AdAstraWindow(QMainWindow):
         name = self.dd_search_edit.text().strip()
         if not name: return
         
+        # Clear maps from previous searches
+        self.gas_map_figure.clear()
+        self.gas_map_canvas.draw()
+        
+        # Clear dynamic photo widgets
+        for i in reversed(range(self.photos_layout.count())): 
+            item = self.photos_layout.itemAt(i)
+            if item.widget():
+                item.widget().deleteLater()
+        self.dynamic_photo_widgets = []
+        
         self.log(f"Searching SIMBAD for '{name}'...")
         QApplication.processEvents()
         
         try:
             # 1. Query Object Properties
-            # Try extended query first (might trigger TAP check which can fail if service is down)
             table = None
             try:
                 custom_simbad = Simbad()
-                custom_simbad.add_votable_fields('V', 'otype', 'ra', 'dec')
+                custom_simbad.add_votable_fields('V', 'otype', 'ra', 'dec', 'plx') # Added plx
                 table = custom_simbad.query_object(name)
             except Exception as e:
                 self.log(f"Extended query failed ({e}), retrying with defaults...")
@@ -1317,71 +1418,59 @@ class AdAstraWindow(QMainWindow):
                 row = table[0]
                 
                 # Extract Data
-                # Handle potential column name variations (e.g. MAIN_ID vs main_id)
-                if 'MAIN_ID' in row.colnames:
-                    main_id = row['MAIN_ID']
-                elif 'main_id' in row.colnames:
-                    main_id = row['main_id']
-                else:
-                    main_id = name
-
+                if 'MAIN_ID' in row.colnames: main_id = row['MAIN_ID']
+                elif 'main_id' in row.colnames: main_id = row['main_id']
+                else: main_id = name
                 if isinstance(main_id, bytes): main_id = main_id.decode('utf-8')
                 main_id = str(main_id)
                 
-                # RA/Dec: Try new names 'ra'/'dec' first, then old 'RA_d'/'DEC_d'
-                if 'ra' in row.colnames:
-                    ra = row['ra']
-                elif 'RA_d' in row.colnames:
-                    ra = row['RA_d']
-                else:
-                    ra = 0.0
+                if 'ra' in row.colnames: ra = row['ra']
+                elif 'RA_d' in row.colnames: ra = row['RA_d']
+                else: ra = 0.0
                 
-                if 'dec' in row.colnames:
-                    dec = row['dec']
-                elif 'DEC_d' in row.colnames:
-                    dec = row['DEC_d']
-                else:
-                    dec = 0.0
+                if 'dec' in row.colnames: dec = row['dec']
+                elif 'DEC_d' in row.colnames: dec = row['DEC_d']
+                else: dec = 0.0
                 
-                # OTYPE
-                if 'OTYPE' in row.colnames:
-                    otype = row['OTYPE']
-                elif 'otype' in row.colnames:
-                    otype = row['otype']
-                else:
-                    otype = '?'
-
+                if 'OTYPE' in row.colnames: otype = row['OTYPE']
+                elif 'otype' in row.colnames: otype = row['otype']
+                else: otype = '?'
                 if isinstance(otype, bytes): otype = otype.decode('utf-8')
                 human_type = OTYPE_MAP.get(str(otype).strip(), str(otype))
                 
                 mag = "-"
-                # Flux V: Try 'V' first, then 'FLUX_V'
                 val = None
-                if 'V' in row.colnames:
-                    val = row['V']
-                elif 'FLUX_V' in row.colnames:
-                    val = row['FLUX_V']
-
-                if val is not None and not np.ma.is_masked(val):
-                    mag = f"{float(val):.2f}"
+                if 'V' in row.colnames: val = row['V']
+                elif 'FLUX_V' in row.colnames: val = row['FLUX_V']
+                if val is not None and not np.ma.is_masked(val): mag = f"{float(val):.2f}"
                 
-                # Format Coordinates
+                # Distance Calculation
+                dist_ly = "-"
+                if 'PLX_VALUE' in row.colnames: plx = row['PLX_VALUE']
+                elif 'plx_value' in row.colnames: plx = row['plx_value']
+                else: plx = None
+                
+                if plx is not None and not np.ma.is_masked(plx) and float(plx) > 0:
+                    # d (pc) = 1000 / plx (mas)
+                    # d (ly) = d (pc) * 3.262
+                    d_pc = 1000.0 / float(plx)
+                    d_ly = d_pc * 3.26156
+                    dist_ly = f"{d_ly:,.1f}"
+                
                 coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
-                
-                # Save for other actions
                 self.current_dd_coord = coord
                 self.current_dd_name = main_id
                 
                 ra_str = coord.ra.to_string(unit=u.hour, sep=('h', 'm', 's'), precision=1, pad=True)
                 dec_str = coord.dec.to_string(unit=u.deg, sep=('d', 'm', 's'), precision=1, alwayssign=True, pad=True)
                 
-                # Update Info Labels
                 self.dd_name_label.setText(main_id)
                 self.dd_type_label.setText(human_type)
                 self.dd_coords_label.setText(f"{ra_str}, {dec_str}")
                 self.dd_mag_label.setText(mag)
+                self.dd_dist_label.setText(dist_ly)
                 
-                # 2. Query Aliases using the resolved MAIN_ID
+                # 2. Query Aliases
                 ids_table = None
                 try:
                     ids_table = custom_simbad.query_objectids(main_id)
@@ -1393,13 +1482,15 @@ class AdAstraWindow(QMainWindow):
                     for id_row in ids_table:
                         val = id_row[0]
                         if isinstance(val, bytes): val = val.decode('utf-8')
-                        alias = ' '.join(str(val).split())
-                        aliases_list.append(alias)
+                        aliases_list.append(' '.join(str(val).split()))
                 
-                # Use HTML with padding to prevent vertical clipping of text
                 self.dd_aliases_label.setText(f"<div style='padding: 10px;'>{', '.join(aliases_list)}</div>")
                 self.dd_results_widget.setVisible(True)
                 self.log(f"Deep dive data loaded for {main_id}")
+                
+                # 3. Load Content (Gas/Dust Maps AND Photos)
+                self.load_deep_dive_content()
+                
             else:
                 QMessageBox.warning(self, "Not Found", f"Could not find object '{name}' in SIMBAD.")
                 self.log(f"Object '{name}' not found.")
@@ -1408,68 +1499,228 @@ class AdAstraWindow(QMainWindow):
             self.log(f"Deep dive search error: {e}")
             QMessageBox.critical(self, "Error", f"Search failed: {e}")
 
-    def find_surrounding_gas(self):
-        if not self.current_dd_coord:
-            QMessageBox.warning(self, "Warning", "Please search for an object first.")
-            return
-        
-        self.log(f"Fetching Gas (HI) and Dust maps for {self.current_dd_name} via CDS HiPS...")
+    def load_deep_dive_content(self):
+        """Fetches and displays only the 2MASS image in the main window."""
+        if not self.current_dd_coord: return
+        fov_deg = 2.0
+
+        # Clear previous content
+        self.gas_map_canvas.setVisible(False)
+        for i in reversed(range(self.photos_layout.count())): 
+            item = self.photos_layout.itemAt(i)
+            if item.widget():
+                item.widget().deleteLater()
+        self.dynamic_photo_widgets = []
+
+        # Fetch 2MASS Color Only
+        self.log("Fetching 2MASS Color image...")
         QApplication.processEvents()
         
         try:
-            # Define HiPS surveys
-            # HI4PI: Neutral Hydrogen Column Density (CDS/P/HI4PI/NH)
-            # AKARI/FIS: Far-Infrared Dust map (CDS/P/AKARI/FIS/N160)
-            surveys = [
-                {'id': 'CDS/P/HI4PI/NH', 'name': 'HI4PI (Hydrogen)'},
-                {'id': 'CDS/P/AKARI/FIS/N160', 'name': 'AKARI (Dust)'}
-            ]
+            result = hips2fits.query(
+                hips='CDS/P/2MASS/color', width=500, height=500,
+                ra=self.current_dd_coord.ra, dec=self.current_dd_coord.dec,
+                fov=fov_deg*u.deg, projection='TAN', format='fits'
+            )
             
-            images = []
-            survey_names = []
-            
-            for survey in surveys:
-                try:
-                    self.log(f"Querying {survey['name']}...")
-                    QApplication.processEvents()
-                    result = hips2fits.query(
-                        hips=survey['id'],
-                        width=500, height=500,
-                        ra=self.current_dd_coord.ra, dec=self.current_dd_coord.dec,
-                        fov=2*u.deg, projection='TAN', format='fits'
-                    )
-                    if result:
-                        images.append(result)
-                        survey_names.append(survey['name'])
-                except Exception as e:
-                    self.log(f"Failed to fetch {survey['name']}: {e}")
-                    # Fallback for Dust if AKARI fails
+            if result:
+                self.add_photo_widget(result[0].data, '2MASS Color (IR)')
+                self.log("2MASS Color loaded.")
+            else:
+                self.log("Failed to load 2MASS Color.")
+                
+        except Exception as e:
+            self.log(f"Error fetching 2MASS Color: {e}")
+
+    def open_surrounding_gas_window(self):
+        """Opens a new window with Gas, Dust, and Optical images."""
+        if not self.current_dd_coord:
+            QMessageBox.warning(self, "Warning", "Please search for an object first.")
+            return
+
+        fov_deg = 2.0
+
+        self.log("Fetching maps for Surrounding Gas window...")
+        QApplication.processEvents()
+
+        surveys = [
+            {'id': 'CDS/P/HI4PI/NH', 'name': 'HI4PI (Hydrogen)', 'cmap': 'inferno'},
+            {'id': 'CDS/P/AKARI/FIS/N160', 'name': 'AKARI (Dust)', 'cmap': 'inferno'},
+            {'id': 'CDS/P/DSS2/red', 'name': 'DSS2 Red', 'cmap': 'gray'},
+            {'id': 'CDS/P/DSS2/blue', 'name': 'DSS2 Blue', 'cmap': 'gray'}
+        ]
+        
+        images_to_plot = []
+        
+        for survey in surveys:
+            try:
+                result = hips2fits.query(
+                    hips=survey['id'], width=500, height=500,
+                    ra=self.current_dd_coord.ra, dec=self.current_dd_coord.dec,
+                    fov=fov_deg*u.deg, projection='TAN', format='fits'
+                )
+                if result:
+                    images_to_plot.append((result[0].data, survey['name'], survey['cmap']))
+                else:
+                    # Fallback for Dust
                     if 'AKARI' in survey['name']:
                         try:
-                            self.log("Attempting fallback to Planck (Dust)...")
-                            QApplication.processEvents()
                             result = hips2fits.query(
-                                hips='CDS/P/Planck/R2/HFI/857',
-                                width=500, height=500,
+                                hips='CDS/P/Planck/R2/HFI/857', width=500, height=500,
                                 ra=self.current_dd_coord.ra, dec=self.current_dd_coord.dec,
-                                fov=2*u.deg, projection='TAN', format='fits'
+                                fov=fov_deg*u.deg, projection='TAN', format='fits'
                             )
                             if result:
-                                images.append(result)
-                                survey_names.append('Planck (Dust)')
-                        except Exception as e2:
-                            self.log(f"Fallback failed: {e2}")
+                                images_to_plot.append((result[0].data, 'Planck (Dust)', 'inferno'))
+                        except:
+                            pass
+            except Exception as e:
+                self.log(f"Failed to fetch {survey['name']}: {e}")
 
-            if not images:
-                raise ValueError("No image data returned from HiPS service.")
-
-            dialog = GasMapDialog(self.current_dd_name, images, survey_names, self)
+        if images_to_plot:
+            dialog = MultiImageDialog(f"Surrounding Gas & Optical: {self.current_dd_name}", images_to_plot, layout_shape=(2, 2), parent=self)
             dialog.exec()
-            self.log(f"Displayed gas/dust maps for {self.current_dd_name}.")
+        else:
+            QMessageBox.warning(self, "Error", "No images could be retrieved.")
 
-        except Exception as e:
-            self.log(f"Error searching surrounding gas: {e}")
-            QMessageBox.critical(self, "Error", f"Search failed: {e}")
+    def open_photos_window(self):
+        """Opens a new window with survey photos."""
+        if not self.current_dd_coord:
+            QMessageBox.warning(self, "Warning", "Please search for an object first.")
+            return
+
+        fov_deg = 2.0
+
+        self.log("Fetching survey photos...")
+        QApplication.processEvents()
+
+        surveys = [
+            {'id': 'CDS/P/DSS2/red', 'name': 'DSS2 Red'},
+            {'id': 'CDS/P/DSS2/blue', 'name': 'DSS2 Blue'},
+            {'id': 'CDS/P/2MASS/color', 'name': '2MASS Color (IR)'}
+        ]
+        
+        images_to_plot = []
+        for survey in surveys:
+            try:
+                result = hips2fits.query(
+                    hips=survey['id'], width=500, height=500,
+                    ra=self.current_dd_coord.ra, dec=self.current_dd_coord.dec,
+                    fov=fov_deg*u.deg, projection='TAN', format='fits'
+                )
+                if result:
+                    # 2MASS Color is RGB, others are grayscale
+                    cmap = 'gray'
+                    data = result[0].data
+                    if data.ndim == 3 and data.shape[0] == 3:
+                        data = np.transpose(data, (1, 2, 0))
+                        cmap = None # RGB doesn't use cmap
+                    
+                    images_to_plot.append((data, survey['name'], cmap))
+            except Exception as e:
+                self.log(f"Failed to fetch {survey['name']}: {e}")
+            
+        if images_to_plot:
+            dialog = MultiImageDialog(f"Survey Photos: {self.current_dd_name}", images_to_plot, layout_shape=(1, 3), parent=self)
+            dialog.exec()
+        else:
+            QMessageBox.warning(self, "Error", "No photos could be retrieved.")
+
+    def find_surrounding_gas(self):
+        # Kept for button compatibility, but logic moved to load_deep_dive_content
+        self.open_surrounding_gas_window()
+
+    def fetch_photo(self):
+        # Kept for button compatibility
+        self.load_deep_dive_content()
+
+    def add_photo_widget(self, image_data, name):
+        """Creates a clickable thumbnail for a photo."""
+        # Create a container for the thumbnail
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create a ClickableLabel
+        # We need to convert the numpy array to a QPixmap for display
+        # This is a simplified conversion for thumbnail purposes
+        
+        # Normalize data for display
+        if image_data.ndim == 3:
+             if image_data.shape[0] == 3:
+                 image_data = np.transpose(image_data, (1, 2, 0))
+             
+             # Apply Asinh stretch to each channel to improve contrast
+             h, w, ch = image_data.shape
+             stretched_data = np.zeros((h, w, ch), dtype=float)
+             
+             for i in range(3):
+                 channel = image_data[:, :, i]
+                 channel = np.nan_to_num(channel)
+                 stretch = AsinhStretch(a=0.1)
+                 vmin, vmax = np.min(channel), np.max(channel)
+                 if vmax > vmin:
+                     norm = ImageNormalize(stretch=stretch, vmin=vmin, vmax=vmax)
+                     res = norm(channel)
+                     if np.ma.is_masked(res):
+                         res = res.filled(0)
+                     stretched_data[:, :, i] = res
+
+             # Convert to 8-bit for QImage
+             display_data = (stretched_data * 255).astype(np.uint8)
+             display_data = np.ascontiguousarray(display_data)
+             h, w, ch = display_data.shape
+             qimg = QImage(display_data.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+        else:
+            norm_data = image_data.astype(float)
+            norm_data = np.nan_to_num(norm_data)
+            dmin, dmax = np.min(norm_data), np.max(norm_data)
+            if dmax > dmin:
+                norm_data = (norm_data - dmin) / (dmax - dmin)
+            else:
+                norm_data[:] = 0
+            display_data = (norm_data * 255).astype(np.uint8)
+            display_data = np.ascontiguousarray(display_data)
+            h, w = display_data.shape
+            qimg = QImage(display_data.data, w, h, w, QImage.Format.Format_Grayscale8)
+
+        pixmap = QPixmap.fromImage(qimg)
+        # Scale down for thumbnail
+        pixmap = pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        
+        label = ClickableLabel(image_data, name)
+        label.setPixmap(pixmap)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.clicked.connect(self.open_image_dialog)
+        
+        title_lbl = QLabel(name)
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        layout.addWidget(label)
+        layout.addWidget(title_lbl)
+        
+        # Add a separator line
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        
+        self.photos_layout.addWidget(container)
+        self.photos_layout.addWidget(line)
+        self.dynamic_photo_widgets.append(container)
+        self.dynamic_photo_widgets.append(line)
+
+    def open_image_dialog(self, image_data, title):
+        dialog = ImageDialog(image_data, title, self)
+        dialog.exec()
+
+    def open_overlay(self, base_data, overlay_type, base_name):
+        if overlay_type in self.overlay_maps:
+            overlay_data = self.overlay_maps[overlay_type]
+            dialog = OverlayDialog(base_data, overlay_data, f"{overlay_type} on {base_name}", self)
+            dialog.exec()
+        else:
+            QMessageBox.warning(self, "Error", f"{overlay_type} map data not available.")
+
 
 if __name__ == "__main__":
     # Download IERS data (Earth rotation data) required for precise time/coordinate conversions
